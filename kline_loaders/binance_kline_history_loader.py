@@ -4,32 +4,42 @@ from datetime import datetime, timedelta
 from loguru import logger
 import time
 
+from utils import get_unix_time
+
 
 class BinanceKlineHistoryLoader:
-    def __init__(self, connection, symbol: str, interval: str, start_date: str, end_date: str):
-        self.base_url = f"{connection['host']}/api/v3/klines"
+    def __init__(self, connection: str, symbol: str, interval: str):
+        self.next_open_time = None
+        self.base_url = f"{connection}/api/v3/klines"
         self.symbol = symbol
         self.interval = interval
-        self.start_date = start_date
-        self.end_date = end_date
-        logger.info(f"Symbol: {self.symbol}, Interval: {self.interval}, "
-                    f"Start Date: {self.start_date}, End Date: {self.end_date}")
+        interval_mapping = {
+            '1m': pd.Timedelta(minutes=1),
+            '3m': pd.Timedelta(minutes=3),
+            '5m': pd.Timedelta(minutes=5),
+            '15m': pd.Timedelta(minutes=15),
+            '30m': pd.Timedelta(minutes=30),
+            '1h': pd.Timedelta(hours=1)
+        }
 
-    def get_unix_time(self, date_str: str) -> int:
-        dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
-        return int(dt.timestamp() * 1000)
+        time_delta = interval_mapping.get(interval)
+        if time_delta is None:
+            raise ValueError("Invalid interval. Please choose from '1m', '3m', '5m', '15m', '30m', '1h'")
 
-    def fetch_data(self) -> pd.DataFrame:
-        start_time = self.get_unix_time(self.start_date)
-        end_time = self.get_unix_time(self.end_date)
+        self.time_delta_millis = int(time_delta.total_seconds() * 1000)
+
+        logger.info(f"Symbol: {self.symbol}, Interval: {self.interval}")
+
+    def fetch_data(self, str_start_date: str) -> pd.DataFrame:
+        start_time = get_unix_time(str_start_date)
+        retry_count = 0
+        current_time_millis = int(time.time() * 1000)
 
         df = pd.DataFrame()
-        while start_time < end_time:
+        while start_time < current_time_millis :
+            end_time = start_time + (self.time_delta_millis * 500) - 1
             url = f"{self.base_url}?symbol={self.symbol}&interval={self.interval}" \
                   f"&startTime={start_time}&endTime={end_time}"
-            logger.info(
-                f"Fetching data from {datetime.fromtimestamp(start_time / 1000)} to "
-                f"{datetime.fromtimestamp(end_time / 1000)}")
 
             response = requests.get(url)
 
@@ -44,15 +54,47 @@ class BinanceKlineHistoryLoader:
                 break
 
             fetched_rows = len(data)
-            logger.info(f"Fetched {fetched_rows} rows of data")
+            logger.info(
+                f"Fetched {fetched_rows} rows of data. "
+                f"From {datetime.fromtimestamp(start_time / 1000)} to "
+                f"{datetime.fromtimestamp(end_time / 1000)}")
 
             temp_df = pd.DataFrame(data, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time',
                                                   'quote_asset_volume', 'number_of_trades',
                                                   'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume',
                                                   'ignore'])
 
+            if not df.empty:
+                expected_open_time = df.iloc[-1]['open_time'] + self.time_delta_millis
+                actual_open_time = temp_df.iloc[0]['open_time']
+                if actual_open_time != expected_open_time:
+                    #logger.error(
+                    #    f"Data gap detected. Expected next open_time: {expected_open_time}, "
+                    #    f"but got: {actual_open_time}, will retry in 5 seconds, (attempt number: {retry_count})")
+                    retry_count += 1
+                    time.sleep(1)
+                    if retry_count > 3:
+                        logger.info(
+                            f"Data gap error here: {datetime.fromtimestamp(start_time / 1000)} to "
+                            f"{datetime.fromtimestamp(end_time / 1000)}")
+                    else:
+                        continue
+
+            if not self.validate(temp_df):
+                #logger.error("Found errors in the result, will retry in 5 seconds")
+                retry_count += 1
+                time.sleep(1)
+                if retry_count > 3:
+                    logger.info(
+                        f"Inconsistent gap error here: {datetime.fromtimestamp(start_time / 1000)} to "
+                        f"{datetime.fromtimestamp(end_time / 1000)}")
+                else:
+                    continue
+
+            retry_count = 0
             df = pd.concat([df, temp_df], ignore_index=True)
-            start_time = int(temp_df.iloc[-1]['close_time']) + 1  # Get the next candle's start time
+            start_time: int = int(temp_df.iloc[-1]['close_time']) + 1  # Get the next candle's start time
+            self.next_open_time = start_time
             time.sleep(1)  # Delay between requests to avoid being rate-limited
 
         logger.info(f"Data fetching completed. Total rows fetched: {len(df)}")
@@ -66,14 +108,15 @@ class BinanceKlineHistoryLoader:
 
         return df
 
-    def find_earliest_candle(self):
-        base_url = "https://api.binance.com/api/v3/klines"
+    def get_last_time(self):
+        return self.next_open_time
 
+    def find_earliest_candle(self):
         # Start from a very early timestamp
         start_time = datetime(2010, 1, 1)
         while True:
             start_time_unix = int(start_time.timestamp() * 1000)
-            url = f"{base_url}?symbol={self.symbol}&interval={self.interval}&startTime={start_time_unix}&limit=1"
+            url = f"{self.base_url}?symbol={self.symbol}&interval={self.interval}&startTime={start_time_unix}&limit=1"
             response = requests.get(url)
 
             if response.status_code != 200:
@@ -82,21 +125,30 @@ class BinanceKlineHistoryLoader:
             data = response.json()
             if data:  # if data is not empty, then we found the earliest available klines data
                 earliest_time = datetime.fromtimestamp(data[0][0] / 1000)
-                logger.info(f"Found earliest available klines data for {self.symbol} is from {self.earliest_time}")
+                logger.info(f"Found earliest available klines data for {self.symbol} is from {earliest_time}")
                 return earliest_time
 
             start_time += timedelta(days=365)  # increment start time by 365 days and try again
 
+    def validate(self, df: pd.DataFrame) -> bool:
+        for i in range(1, len(df)):
+            # Directly compare without type conversion
+            current_time_millis = df.iloc[i]['open_time']
+            previous_time_millis = df.iloc[i - 1]['open_time']
+
+            if current_time_millis - previous_time_millis != self.time_delta_millis:
+                # logger.error(f"Inconsistency found between rows {i - 1} and {i}.")
+                return False
+
+        return True
+
 
 def main():
     symbol = "BTCUSDT"
-    interval = "15m"
-    start_date = "2023-01-01 00:00:00"
-    end_date = "2023-09-22 00:00:00"
-
-    downloader = BinanceKlineHistoryLoader(symbol, interval, start_date, end_date)
-    start_date = downloader.find_earliest_candle('BTCUSDT', '1d')
-    data = downloader.fetch_data()
+    interval = "5m"
+    downloader = BinanceKlineHistoryLoader("https://api.binance.com", symbol, interval)
+    start_date = downloader.find_earliest_candle().strftime("%Y-%m-%d %H:%M")
+    data = downloader.fetch_data(start_date)
     print(data.head())
 
 

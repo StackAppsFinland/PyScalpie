@@ -34,8 +34,12 @@ class HistoryUpdater:
 
     def main(self):
         for connection_name, connection_details in self.connections.items():
+            if not connection_details.get('enabled', True):
+                continue
+
             history_symbols = connection_details.get('historySymbols', [])  # might not want history for symbol
-            history_intervals = connection_details.get('historyIntervals', ["5m"])  # defaulting to 5 mins if not provided
+            history_intervals = connection_details.get('historyIntervals',
+                                                       ["5m"])  # defaulting to 5 mins if not provided
 
             for symbol in history_symbols:
                 for interval in history_intervals:
@@ -48,23 +52,25 @@ class HistoryUpdater:
                         latest_date_file = utils.PYSCALPIE_PATH / connection_name / f"{symbol}-{interval}-latest-date"
                         kline_filename = utils.PYSCALPIE_PATH / connection_name / f"{symbol}-{interval}.csv"
                         os.makedirs(utils.PYSCALPIE_PATH / connection_name, exist_ok=True)
-                        latest_date_content = utils.load_file(latest_date_file)
+                        latest_date_content = utils.file_exists(latest_date_file) and utils.load_file(latest_date_file)
 
-                        end_date = utils.get_current_datetime()
-                        start_date = "2023-09-19 00:00"
-                        if latest_date_content is not None:
+                        start_date = None
+                        if latest_date_content:
                             start_date = latest_date_content
 
-                        instance = class_(connection_details, symbol, interval, start_date, end_date)
+                        instance = class_(connection_details['host'], symbol, interval)
                         logger.info(
                             f"Successfully created an instance of {module_name}.{class_name}")
-                        df = instance.fetch_data()
+
+                        if start_date is None:
+                            start_date = instance.find_earliest_candle().strftime('%Y-%m-%d %H:%M')
+                            logger.info(f"Initial date of {start_date} found")
+
+                        df = instance.fetch_data(start_date)
                         write_header = not utils.file_exists(kline_filename)
-                        response = df.to_csv(kline_filename, mode='a', index=False)
-
+                        df.to_csv(kline_filename, mode='a', index=False, header=write_header)
                         with open(latest_date_file, 'w') as file:
-                            file.write(df.iloc[-1]['close_time'].strftime('%Y-%m-%d %H:%M'))
-
+                            file.write(instance.get_last_time)
                     except ImportError:
                         logger.error(f"Failed to import {module_name}")
                     except AttributeError as e:

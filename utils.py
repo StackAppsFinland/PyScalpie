@@ -13,6 +13,7 @@ def get_current_datetime():
     formatted_now = now.strftime("%Y-%m-%d %H:%M")
     return formatted_now
 
+
 def load_file(filepath):
     content = None
     try:
@@ -33,6 +34,11 @@ def load_file(filepath):
         logger.exception("An unexpected error occurred")
 
     return content
+
+
+def get_unix_time(date_str: str) -> int:
+    dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+    return int(dt.timestamp() * 1000)
 
 
 def save_file(filepath, content, zip_mode=False):
