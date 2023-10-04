@@ -11,9 +11,10 @@ class TorobaseAnalyzer:
     def analyze(self):
         trade_reader = TorobaseTradeReader()
         trades = trade_reader.read_trades()
-        durations_in_seconds = [trade.trade_duration.total_seconds() for trade in trades]
-        max_duration = max(durations_in_seconds)
-        bins = [i for i in range(0, int(max_duration) + 10, 10)]
+        durations_in_seconds = [trade.trade_duration.total_seconds() for trade in trades if
+                                trade.profit_loss_curr_1_value > 0]
+        max_duration = 120
+        bins = [i for i in range(0, int(max_duration) + 1)]
         plt.hist(durations_in_seconds, bins=bins, edgecolor="k", alpha=0.7)
         # Add titles and labels
         plt.title('Trade Duration Histogram')
