@@ -1,7 +1,7 @@
 import logging
-from datetime import datetime
 
 import utils
+from torobase_event_reader import TorobaseEventReader
 from trade import Trade
 
 
@@ -11,7 +11,8 @@ class TorobaseTradeReader:
         self.trades = []
 
     def read_trades(self):
-        date_format = "%Y-%m-%d %H:%M:%S.%f"
+        event_reader = TorobaseEventReader()
+        events = event_reader.read_events()
 
         with open(self.filename, 'r') as file:
             while True:
@@ -35,14 +36,28 @@ class TorobaseTradeReader:
                     profit_loss_curr_2 = currency_2[1]
 
                     settlement_id = file.readline().strip()
-                    updated = datetime.strptime(file.readline().strip(), date_format)
-                    created = datetime.strptime(file.readline().strip(), date_format)
+                    updated = utils.get_datetime_iso(file.readline().strip())
+                    created = utils.get_datetime_iso(file.readline().strip())
                     uid = file.readline().strip()
+
+                    # marry up event with UID.
+                    event_info = events.get(uid, None)
+
+                    stop_loss = None
+                    take_profit = None
+                    event_timestamp = None
+
+                    if event_info is None:
+                        logging.error(f"Missing event info for UID: {uid}")
+                    else:
+                        stop_loss = event_info["stop_loss"]
+                        take_profit = event_info["take_profit"]
+                        event_timestamp = event_info["timestamp"]
 
                     extracted_trade = Trade(transaction_type, currency_pair, amount, open_price, close_price, status,
                                             profit_loss_pips, profit_loss_curr_1_value, profit_loss_curr_1,
-                                            profit_loss_curr_2_value, profit_loss_curr_2, settlement_id, updated,
-                                            created, uid)
+                                            profit_loss_curr_2_value, profit_loss_curr_2, stop_loss, take_profit,
+                                            event_timestamp, settlement_id, updated, created, uid)
                     self.trades.append(extracted_trade)
                 except Exception as e:
                     print(f"Error occurred: {str(e)}")

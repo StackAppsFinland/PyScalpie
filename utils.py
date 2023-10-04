@@ -6,6 +6,7 @@ from pathlib import Path
 from loguru import logger
 
 PYSCALPIE_PATH = os.getenv('PYSCALPIE_DIR', Path.home() / ".pyScalpie")
+ISO_DATE_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
 def get_current_datetime():
@@ -39,6 +40,10 @@ def load_file(filepath):
 def get_unix_time(date_str: str) -> int:
     dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
     return int(dt.timestamp() * 1000)
+
+
+def get_datetime_iso(date_str: str) -> datetime:
+    return datetime.strptime(date_str, ISO_DATE_FORMAT)
 
 
 def save_file(filepath, content, zip_mode=False):
